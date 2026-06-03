@@ -1,0 +1,4 @@
+# Netlify config — serves the office-screen deck at the site root.
+[build]
+  publish = "."
+  command = ""
