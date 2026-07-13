@@ -5,7 +5,11 @@
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%;background:#000;font-family:'Figtree',-apple-system,Segoe UI,Roboto,sans-serif;overflow:hidden}
 .deck{position:fixed;inset:0}
-.slide{position:absolute;inset:0;display:flex;flex-direction:column;gap:1.6vw;padding:2.4vw;background:var(--bg);opacity:0;transition:opacity .7s ease}
+/* content-visibility gate: only slides in the ~3-slide window (JS-toggled .near) get rendered.
+   Remaining ~48 are content-visibility:hidden — browser skips layout/paint/compositing entirely,
+   freeing GPU layer memory on 2GB devices. contain-intrinsic-size reserves the box dimensions. */
+.slide{position:absolute;inset:0;display:flex;flex-direction:column;gap:1.6vw;padding:2.4vw;background:var(--bg);opacity:0;transition:opacity .7s ease;content-visibility:hidden;contain-intrinsic-size:100vh 100vw}
+.slide.near{content-visibility:visible}
 .slide.active{opacity:1}
 .topbar{position:relative;height:11vh;display:flex;align-items:center}
 .body{flex:1;display:flex;gap:2vw;min-height:0}
@@ -1931,14 +1935,12 @@ document.querySelectorAll('[data-dom]').forEach(el=>{
   img.onerror=()=>{ k++; if(k<sources.length) img.src=sources[k]; };
   img.alt=''; img.src=sources[0];
 });
-// QR codes client-side
-document.querySelectorAll('.qr[data-url]').forEach(el=>{
-  try{ new QRCode(el,{text:el.dataset.url,width:170,height:170,correctLevel:QRCode.CorrectLevel.M}); }
-  catch(e){ el.classList.add('noqr'); el.innerHTML='<span>Scan to read</span>'; }
-});
 const slides=[...document.querySelectorAll('.slide')];
 let i=0; const DUR=9000, bar=document.getElementById('bar');
 const ix=document.getElementById('ix');
+// Lazy asset loaders — only slides in the ~3-slide window keep photos/logos/QR canvases resident.
+// Previous bug: all 51 QR canvases (170x170 each) instantiated at page load → ~5-6MB GPU bitmap RAM
+// on top of 51 photos + 51 logos → OOM on 2GB screens → browser silently drops slides ~19+.
 function loadPhoto(n){
   const s=slides[n]; if(!s) return;
   const img=s.querySelector('.photo img[data-src]');
@@ -1965,12 +1967,40 @@ function unloadLogo(n){
     img.removeAttribute('src');
   }
 }
+function loadQR(n){
+  const s=slides[n]; if(!s) return;
+  const el=s.querySelector('.qr[data-url]');
+  if(!el || el.dataset.qrLoaded==='1') return;
+  try{
+    new QRCode(el,{text:el.dataset.url,width:170,height:170,correctLevel:QRCode.CorrectLevel.M});
+    el.dataset.qrLoaded='1';
+  } catch(e){
+    el.classList.add('noqr'); el.innerHTML='<span>Scan to read</span>';
+  }
+}
+function unloadQR(n){
+  const s=slides[n]; if(!s) return;
+  const el=s.querySelector('.qr[data-url]');
+  if(!el || el.dataset.qrLoaded!=='1') return;
+  el.innerHTML=''; // drops the qrcodejs table/canvas so its bitmap is GC-eligible
+  delete el.dataset.qrLoaded;
+}
+function setNear(n){
+  // 3-slide render window: prev, active, next. Non-near slides get content-visibility:hidden
+  // and are skipped by the compositor entirely.
+  const L=slides.length;
+  const win=new Set([(n-1+L)%L, n, (n+1)%L]);
+  slides.forEach((s,k)=>s.classList.toggle('near', win.has(k)));
+}
 function show(n){
+  setNear(n);
   slides.forEach((s,k)=>s.classList.toggle('active',k===n));
   if(ix) ix.textContent=(n+1);
-  loadPhoto(n); loadLogo(n);
-  loadPhoto((n+1)%slides.length); loadLogo((n+1)%slides.length);
-  unloadPhoto((n-2+slides.length)%slides.length); unloadLogo((n-2+slides.length)%slides.length);
+  loadPhoto(n); loadLogo(n); loadQR(n);
+  const nx=(n+1)%slides.length;
+  loadPhoto(nx); loadLogo(nx); loadQR(nx);
+  const drop=(n-2+slides.length)%slides.length;
+  unloadPhoto(drop); unloadLogo(drop); unloadQR(drop);
 }
 function restart(){bar.style.transition='none';bar.style.width='0';
   requestAnimationFrame(()=>{bar.style.transition='width '+DUR+'ms linear';bar.style.width='100%';});}
